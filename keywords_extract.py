@@ -10,7 +10,6 @@ from typing import List, Dict, Tuple, Optional
 
 class OllamaServer:
     def __init__(self):
-        """Initialize Ollama server manager"""
         self.ollama_path = self._get_ollama_path()
         self.process = None
         
@@ -72,74 +71,46 @@ class IssueClassifier:
     def __init__(self, model_name: str = "deepseek-r1:14b"):
         self.model_name = model_name
         self.api_url = "http://localhost:11434/api/generate"
-        self.issue_types = [
-            "Age", "App Related", "DataSecurity", "Gender",
-            "Giftcard", "Location", "Other", "Reward", "Survey"
-        ]
-        
-    def generate_prompt(self, complaint: str) -> str:
-        return f"""Given the following customer complaint, classify it into ONE of these categories:
-Categories: {', '.join(self.issue_types)}
+    
+    def generate_prompt(self, complaint: str, keywords: List[str]) -> str:
+        return f"""Given the following customer complaint and extracted keywords, classify it into ONE category:
 
 Complaint: {complaint}
+Keywords: {', '.join(keywords)}
 
-Respond with ONLY ONE category name from the list above. No explanation needed.
-"""
+Respond with ONLY ONE category name. No explanation needed."""
     
-    def classify_issue(self, complaint: str) -> str:
+    def classify_issue(self, complaint: str, keywords: List[str]) -> str:
         if not complaint or pd.isna(complaint):
             return "Other"
             
         try:
             payload = {
                 "model": self.model_name,
-                "prompt": self.generate_prompt(complaint),
+                "prompt": self.generate_prompt(complaint, keywords),
                 "stream": False
             }
             
             response = requests.post(self.api_url, json=payload)
             response.raise_for_status()
             
-            result = response.json()["response"].strip()
-            
-            if result in self.issue_types:
-                return result
-            else:
-                return "Other"
+            return response.json()["response"].strip()
                 
         except Exception as e:
             print(f"Error classifying complaint: {e}")
             return "Other"
 
-class KeywordExtractor:
-    def __init__(self, model_name: str = "keyword-extraction-llm"):
-        self.model_name = model_name
-        self.api_url = "http://localhost:11434/api/generate"
-        
-    def generate_prompt(self, text: str) -> str:
-        return f"""Extract the most relevant keywords from the following text:
-
-Text: {text}
-
-Respond with a comma-separated list of keywords only."""
-    
-    def extract_keywords(self, text: str) -> List[str]:
-        try:
-            payload = {
-                "model": self.model_name,
-                "prompt": self.generate_prompt(text),
-                "stream": False
-            }
-            
-            response = requests.post(self.api_url, json=payload)
-            response.raise_for_status()
-            
-            result = response.json()["response"].strip()
-            return result.split(", ")
-        
-        except Exception as e:
-            print(f"Error extracting keywords: {e}")
-            return []
+def extract_keywords(text: str) -> List[str]:
+    cleaned_text = cleantxty.clean(
+        text, 
+        default_case="lower", 
+        remove_punctuations=True, 
+        remove_digits=True
+    )
+    words = cleaned_text.split()
+    issue_keywords = ["redeem", "voucher", "coupon", "coins", "provide", "showing"]
+    extracted_keywords = [word for word in words if word in issue_keywords]
+    return extracted_keywords
 
 # Load the dataset
 file_path = "customer_support_data.csv"
@@ -149,12 +120,15 @@ df = pd.read_csv(file_path)
 server = OllamaServer()
 server.start_server()
 
-# Initialize classifiers
-issue_classifier = IssueClassifier("deepseek-r1:14b")
-keyword_extractor = KeywordExtractor("keyword-extraction-llm")
+# Initialize classifier
+classifier = IssueClassifier("deepseek-r1:14b")
 
-df["Issue Type"] = df["ComplaintMessage"].apply(issue_classifier.classify_issue)
-df["Keywords"] = df["ComplaintMessage"].apply(keyword_extractor.extract_keywords)
+def process_complaints(row):
+    keywords = extract_keywords(row["ComplaintMessage"])
+    issue_type = classifier.classify_issue(row["ComplaintMessage"], keywords)
+    return pd.Series([issue_type, keywords])
+
+df[["Issue Type", "Keywords"]] = df.apply(process_complaints, axis=1)
 
 df.to_csv("classified_customer_support.csv", index=False)
 
